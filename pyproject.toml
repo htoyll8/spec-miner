@@ -1,0 +1,21 @@
+[project]
+name = "spec-mining"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "tree-sitter==0.26.0",
+    "tree-sitter-python==0.25.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.ruff]
+line-length = 79
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
