@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 .DS_Store
 FUTURE_WORK.md
+exp/specpilot_tasks60.json
