@@ -54,6 +54,9 @@ def test_inner_command():
     assert f"tracer.py discover /testbed {changed} /out/keys.json" in cmd
     assert "/out/calls.pkl" in cmd
     assert cmd.index("discover") < cmd.index("record")
+    assert cmd.index("record") < cmd.index(
+        "show /out/calls.pkl > /out/calls.txt"
+    )
     # The self-check runs first, so a broken tracer stops the run early.
     assert cmd.index("selfcheck.py") < cmd.index("discover")
 

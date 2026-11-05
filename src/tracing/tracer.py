@@ -25,7 +25,10 @@ can't save is stored as {"unsaved": reason}.
     python tracer.py discover ROOT CHANGED KEYS.json -- PYTEST_ARGS...
     python tracer.py record ROOT CHANGED KEYS.json CALLS.pkl -- PYTEST_ARGS...
 
-CHANGED is one path, or several separated by commas.
+    python tracer.py show CALLS.pkl > CALLS.txt
+
+CHANGED is one path, or several separated by commas. show needs the repo's
+classes importable, so run it where the repo is, like inside the container.
 """
 
 import ast
@@ -198,7 +201,14 @@ def current_test():
     return test, phase.strip("()")
 
 
+# A dict's keys(), values() and items() are live views, which pickle can't
+# save, so they're saved as lists.
+VIEWS = (type({}.keys()), type({}.values()), type({}.items()))
+
+
 def save(value):
+    if isinstance(value, VIEWS):
+        value = list(value)
     try:
         return {"pickle": pickle.dumps(value)}
     except Exception as e:
@@ -285,7 +295,10 @@ def show(calls):
             return "-"
         if "unsaved" in saved:
             return "<unsaved: " + saved["unsaved"] + ">"
-        value = pickle.loads(saved["pickle"])
+        try:
+            value = pickle.loads(saved["pickle"])
+        except Exception as e:
+            return "<can't load: " + type(e).__name__ + ": " + str(e) + ">"
         fields = getattr(value, "__dict__", None)
         if fields is not None and not isinstance(value, type):
             return type(value).__name__ + repr(fields)
@@ -322,6 +335,10 @@ def run_tests(hook, pytest_args):
 
 
 def main(argv):
+    if argv[:1] == ["show"] and len(argv) == 2:
+        with open(argv[1], "rb") as f:
+            print(show(pickle.load(f)["calls"]))
+        return
     if "--" not in argv:
         sys.exit(__doc__)
     i = argv.index("--")
