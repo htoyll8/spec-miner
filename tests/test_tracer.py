@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 
 from tracing.selfcheck import FILES, LIBRARY, problems
-from tracing.tracer import Discover, Record, Repo, qualnames, show
+from tracing.tracer import (
+    Discover,
+    Record,
+    Repo,
+    qualnames,
+    save,
+    show,
+)
 
 TRACER = Path(__file__).parent.parent / "src" / "tracing" / "tracer.py"
 
@@ -177,3 +184,24 @@ def test_qualnames_from_source(tmp_path):
     assert names[4] == "Grid.add.<locals>.inner"
     assert names[7] == names[8] == "Grid.make"  # decorator line and def line
     assert names[11] == "top"
+
+
+def test_dict_views_are_saved_as_lists():
+    d = {"a": 1}
+    assert pickle.loads(save(d.items())["pickle"]) == [("a", 1)]
+    assert pickle.loads(save(d.keys())["pickle"]) == ["a"]
+
+
+def test_show_survives_values_it_cant_load():
+    broken = {"pickle": b"not a pickle"}
+    call = {
+        "function": ["m.py", 1, "f"],
+        "role": "changed",
+        "test": None,
+        "phase": None,
+        "before": {"x": broken},
+        "after": {},
+        "result": None,
+        "raised": None,
+    }
+    assert "<can't load" in show([call])

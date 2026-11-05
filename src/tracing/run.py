@@ -6,7 +6,8 @@ run tracer.py's two passes over the F2P and P2P tests. Each call
 is tagged with its test, and tests.json says which are F2P, so calls from the
 fix's tests can be left out later.
 
-Writes <run>/1_traces/<task>/: keys.json, calls.pkl, tests.json, trace.log.
+Writes <run>/1_traces/<task>/: keys.json, calls.pkl, calls.txt (readable),
+tests.json and trace.log.
 
     python -m tracing.run --tasks TASKS.json --run RUN_DIR --task ID[,ID...]
         --trace-timeout S --pull-timeout S --docker-timeout S
@@ -61,6 +62,8 @@ def inner_command(task):
             f" -- {tests} {opts}",
             f"{tracer} record /testbed {changed} /out/keys.json"
             f" /out/calls.pkl -- {tests} {opts}",
+            # A readable copy, made here since loading needs the repo.
+            f"{tracer} show /out/calls.pkl > /out/calls.txt",
         ]
     )
 
