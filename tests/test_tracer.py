@@ -1,94 +1,16 @@
 import importlib
-import json
 import os
 import pickle
-import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
-from tracing.tracer import Discover, Record, Repo, show
+from tracing.selfcheck import FILES, LIBRARY, problems
+from tracing.tracer import Discover, Record, Repo, qualnames, show
 
 TRACER = Path(__file__).parent.parent / "src" / "tracing" / "tracer.py"
-
-FILES = {
-    "fakerepo/__init__.py": "",
-    "fakerepo/changed.py": """
-        import fakelib
-        from fakerepo.helpers import clean, shout
-
-        class Grid:
-            def __init__(self):
-                self.cells = []
-
-            def add(self, x):
-                self.cells.append(clean(x))
-                return len(self.cells)
-
-            def fail(self):
-                raise ValueError("no")
-
-            def safe(self):
-                try:
-                    raise KeyError("k")
-                except KeyError:
-                    return "caught"
-
-        def keep(f):
-            return f
-
-        def apply(x):
-            # A callback through a library: shout is still a callee.
-            return fakelib.call(shout, x)
-    """,
-    "fakerepo/helpers.py": """
-        def clean(x):
-            return x.strip()
-
-        def shout(x):
-            return x.upper()
-
-        def unused():
-            return 1
-    """,
-    "fakerepo/api.py": """
-        import fakelib
-        from fakerepo.changed import Grid
-
-        def build(xs):
-            g = Grid()
-            for x in xs:
-                g.add(x)
-            return g
-
-        def other():
-            return 2
-
-        def via_lib(x):
-            # Calls Grid.add through a library: still a caller.
-            return fakelib.call(Grid().add, x)
-    """,
-    "tests/test_api.py": """
-        from fakerepo.api import build, other, via_lib
-        from fakerepo.changed import Grid, apply, keep
-
-        def test_all():
-            assert len(build([" a ", "b"]).cells) == 2
-            assert other() == 2
-            assert Grid().safe() == "caught"
-            keep(lambda: 1)
-            assert via_lib("c") == 1
-            assert apply("d") == "D"
-    """,
-}
-
-# A library outside the repo, which calls whatever it's given.
-LIBRARY = """
-    def call(f, *args):
-        return f(*args)
-"""
 
 
 @pytest.fixture
@@ -197,31 +119,9 @@ def test_values_pickle_cant_save_are_marked(repo):
     assert "unsaved" in keep["before"]["f"]
 
 
-def test_command_line_runs_both_passes(repo):
-    """The two passes as they'd run in a container, through pytest."""
-    keys, out = repo / "keys.json", repo / "calls.pkl"
-    changed = str(repo / "fakerepo/changed.py")
-    path = os.pathsep.join([str(repo), str(repo.parent / "lib")])
-    env = {**os.environ, "PYTHONPATH": path}
-    env_args = {"cwd": repo, "env": env, "check": True, "capture_output": True}
-    for args in (
-        ["discover", str(repo), changed, str(keys)],
-        ["record", str(repo), changed, str(keys), str(out)],
-    ):
-        cmd = [sys.executable, str(TRACER), *args]
-        subprocess.run([*cmd, "--", "tests/test_api.py", "-q"], **env_args)
-    found = {(k[0], k[2]): k[3] for k in json.loads(keys.read_text())}
-    assert found == {
-        ("fakerepo/api.py", "build"): "caller",
-        ("fakerepo/api.py", "via_lib"): "caller",
-        ("fakerepo/helpers.py", "clean"): "callee",
-        ("fakerepo/helpers.py", "shout"): "callee",
-    }
-    data = pickle.loads(out.read_bytes())
-    recorded = {c["function"][2] for c in data["calls"]}
-    expected = {"build", "via_lib", "clean", "shout", "Grid.add", "keep"}
-    assert expected <= recorded
-    assert "<module>" not in recorded
+def test_selfcheck_passes():
+    """Both passes through pytest, as the runner runs them in a container."""
+    assert problems() == []
 
 
 def test_kinds(repo):
@@ -234,6 +134,46 @@ def test_kinds(repo):
     test_file = repo / "tests" / "test_api.py"
     code = compile("def f(): pass", str(test_file), "exec")
     assert r.kind(code.co_consts[0]) == "test"
+    # A class body runs as a call when imported, but isn't a function.
+    body = compile(
+        "class C:\n    x = 1", str(repo / "fakerepo/api.py"), "exec"
+    )
+    assert r.kind(body.co_consts[0]) is None
     # Not a real file, even though the path would resolve inside the repo.
     frozen = compile("def f(): pass", "<frozen importlib._bootstrap>", "exec")
     assert r.kind(frozen.co_consts[0]) == "library"
+
+
+def test_several_changed_files(repo):
+    r = Repo(repo, [repo / "fakerepo/changed.py", repo / "fakerepo/api.py"])
+    api = importlib.import_module("fakerepo.api")
+    helpers = importlib.import_module("fakerepo.helpers")
+    assert r.kind(api.build.__code__) == "changed"
+    assert r.kind(helpers.clean.__code__) == "repo"
+
+
+def test_qualnames_from_source(tmp_path):
+    """How older Pythons, without co_qualname, name functions."""
+    path = tmp_path / "m.py"
+    path.write_text(
+        textwrap.dedent(
+            """
+            class Grid:
+                def add(self):
+                    def inner():
+                        pass
+
+                @staticmethod
+                def make():
+                    pass
+
+            def top():
+                pass
+            """
+        )
+    )
+    names = qualnames(str(path))
+    assert names[3] == "Grid.add"
+    assert names[4] == "Grid.add.<locals>.inner"
+    assert names[7] == names[8] == "Grid.make"  # decorator line and def line
+    assert names[11] == "top"

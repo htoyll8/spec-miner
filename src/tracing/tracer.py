@@ -1,7 +1,7 @@
 """Records calls, with whole objects, while a task's tests run.
 
-Recorded: every function in the changed file, plus its direct callers and
-callees anywhere in the repo. Test files and libraries are left out, but
+Recorded: every function in the changed files, plus their direct callers
+and callees anywhere in the repo. Test files and libraries are left out, but
 calls are seen through them: a repo function that calls a changed function
 by way of a library still counts as its caller.
 
@@ -15,14 +15,20 @@ Two passes over the same tests:
   record    snapshots each call to those functions and the changed file's own:
             the arguments at entry and at exit, and the result or exception.
 
+Each call is tagged with the test that made it, from pytest's
+PYTEST_CURRENT_TEST, so calls from some tests can be left out later.
+
 Each value is saved with pickle.dumps the moment it's seen, which copies it,
 so later changes by the program can't reach the snapshot. A value pickle
 can't save is stored as {"unsaved": reason}.
 
     python tracer.py discover ROOT CHANGED KEYS.json -- PYTEST_ARGS...
     python tracer.py record ROOT CHANGED KEYS.json CALLS.pkl -- PYTEST_ARGS...
+
+CHANGED is one path, or several separated by commas.
 """
 
+import ast
 import json
 import os
 import pickle
@@ -31,7 +37,10 @@ import sys
 # Code flags for generators and coroutines, which pause and resume. Their
 # call and return events don't match one call, so they're skipped for now.
 PAUSING = 0x20 | 0x80 | 0x200
-# Code that runs as a call but isn't a function.
+# Functions have the CO_OPTIMIZED flag. Module and class bodies, which also
+# run as calls, don't.
+OPTIMIZED = 0x01
+# Comprehensions are functions to Python before 3.12, but not to a reader.
 NOT_FUNCTIONS = (
     "<module>",
     "<listcomp>",
@@ -56,24 +65,28 @@ class Repo:
     """Decides which functions belong to the repo and names them."""
 
     def __init__(self, root, changed):
+        """changed is a path, or a list of paths."""
+        if isinstance(changed, (str, os.PathLike)):
+            changed = [changed]
         self.root = os.path.realpath(root)
-        self.changed = os.path.realpath(changed)
+        self.changed = {os.path.realpath(c) for c in changed}
         self._kinds = {}
         self._keys = {}
+        self._names = {}  # file -> {line: qualified name}
 
     def kind(self, code):
         """'changed', 'repo', 'test' or 'library', or None for code that
-        isn't a function, like a module body or a comprehension.
+        isn't a function, like a module or class body, or a comprehension.
 
         library is everything outside the repo, and anything installed in
         site-packages: Python's own modules, pytest, numpy and so on.
         """
-        if code.co_name in NOT_FUNCTIONS:
+        if not code.co_flags & OPTIMIZED or code.co_name in NOT_FUNCTIONS:
             return None
         f = code.co_filename
         if f not in self._kinds:
             p = os.path.realpath(f)
-            if p == self.changed:
+            if p in self.changed:
                 self._kinds[f] = "changed"
             elif (
                 f.startswith("<")  # not a file, like <frozen importlib>
@@ -105,9 +118,49 @@ class Repo:
             rel = os.path.relpath(
                 os.path.realpath(code.co_filename), self.root
             )
-            name = getattr(code, "co_qualname", code.co_name)
-            self._keys[code] = (rel, code.co_firstlineno, name)
+            self._keys[code] = (rel, code.co_firstlineno, self.qualname(code))
         return self._keys[code]
+
+    def qualname(self, code):
+        """The function's full name, like Grid.add.
+
+        Python 3.11 gives it as co_qualname. Before that, it's read from the
+        source: the function whose def or decorator is on co_firstlineno.
+        """
+        if hasattr(code, "co_qualname"):
+            return code.co_qualname
+        names = self._names.get(code.co_filename)
+        if names is None:
+            names = self._names[code.co_filename] = qualnames(code.co_filename)
+        return names.get(code.co_firstlineno, code.co_name)
+
+
+def qualnames(path):
+    """{line: qualified name} for every function in a file, keyed by its def
+    line and each decorator's line, since co_firstlineno is one of them."""
+    try:
+        with open(path) as f:
+            tree = ast.parse(f.read())
+    except (OSError, SyntaxError, ValueError):
+        return {}
+    out = {}
+
+    def walk(node, prefix):
+        for child in ast.iter_child_nodes(node):
+            defs = (ast.FunctionDef, ast.AsyncFunctionDef)
+            if isinstance(child, defs + (ast.ClassDef,)):
+                name = prefix + child.name
+                if isinstance(child, defs):
+                    for n in [child] + child.decorator_list:
+                        out[n.lineno] = name
+                    walk(child, name + ".<locals>.")
+                else:
+                    walk(child, name + ".")
+            else:
+                walk(child, prefix)
+
+    walk(tree, "")
+    return out
 
 
 class Discover:
@@ -130,6 +183,19 @@ class Discover:
         elif here == "repo" and back == "changed":
             self.found.setdefault(self.repo.key(frame.f_code), "callee")
         return None  # no line events, so this pass stays fast
+
+
+def current_test():
+    """The running test's ID and phase, like ("t.py::test_a", "call").
+
+    pytest sets PYTEST_CURRENT_TEST to "t.py::test_a (call)" while a test
+    runs, and "setup" or "teardown" around it.
+    """
+    s = os.environ.get("PYTEST_CURRENT_TEST")
+    if not s:
+        return None, None
+    test, _, phase = s.rpartition(" ")
+    return test, phase.strip("()")
 
 
 def save(value):
@@ -177,9 +243,12 @@ class Record:
         if role is None:
             return None
         names = arg_names(code)
+        test, phase = current_test()
         call = {
             "function": list(self.repo.key(code)),
             "role": role,
+            "test": test,
+            "phase": phase,
             "before": snapshot(frame, names),
             "after": None,
             "result": None,
@@ -231,6 +300,8 @@ def show(calls):
         lines.append(
             name + "  (" + c["role"] + ", " + path + ":" + str(line) + ")"
         )
+        if c.get("test"):
+            lines.append("  test:   " + c["test"] + " (" + c["phase"] + ")")
         lines.append("  before: " + args(c["before"]))
         lines.append("  after:  " + args(c["after"] or {}))
         if c["raised"]:
@@ -257,7 +328,7 @@ def main(argv):
     mine, pytest_args = argv[:i], argv[i:][1:]
     if mine[0] == "discover":
         root, changed, keys_path = mine[1:4]
-        d = Discover(Repo(root, changed))
+        d = Discover(Repo(root, changed.split(",")))
         run_tests(d.hook, pytest_args)
         with open(keys_path, "w") as f:
             json.dump([list(k) + [r] for k, r in d.found.items()], f, indent=1)
@@ -265,10 +336,11 @@ def main(argv):
         root, changed, keys_path, out_path = mine[1:5]
         with open(keys_path) as f:
             roles = {(k[0], k[1], k[2]): k[3] for k in json.load(f)}
-        r = Record(Repo(root, changed), roles)
+        r = Record(Repo(root, changed.split(",")), roles)
         run_tests(r.hook, pytest_args)
         with open(out_path, "wb") as f:
-            pickle.dump({"changed": changed, "calls": r.calls}, f)
+            data = {"changed": changed.split(","), "calls": r.calls}
+            pickle.dump(data, f)
     else:
         sys.exit(__doc__)
 
