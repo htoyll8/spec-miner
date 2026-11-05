@@ -18,7 +18,9 @@ import sys
 import tempfile
 import textwrap
 
-TRACER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tracer.py")
+HERE = os.path.dirname(os.path.abspath(__file__))
+TRACER = os.path.join(HERE, "tracer.py")
+FLATTEN = os.path.join(HERE, "flatten.py")
 
 FILES = {
     "fakerepo/__init__.py": "",
@@ -122,36 +124,45 @@ def write_fake_repo(base):
     return root, lib
 
 
-def run_passes(root, lib):
-    """Run discover and record on the fake repo. Returns (keys, data)."""
-    keys, out = (
-        os.path.join(root, "keys.json"),
-        os.path.join(root, "calls.pkl"),
-    )
-    changed = os.path.join(root, "fakerepo", "changed.py")
+def run(cmd, root, lib):
+    """Run cmd in the fake repo, raising with its output if it fails."""
     env = {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
     env["PYTHONPATH"] = os.pathsep.join([root, lib])
+    r = subprocess.run(
+        cmd,
+        cwd=root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(cmd[2] + " failed:\n" + r.stdout[-2000:])
+
+
+def run_passes(root, lib):
+    """Run discover, record and flatten on the fake repo.
+
+    Returns (keys, calls, flat).
+    """
+    keys = os.path.join(root, "keys.json")
+    calls = os.path.join(root, "calls.pkl")
+    flat = os.path.join(root, "flat.pkl")
+    changed = os.path.join(root, "fakerepo", "changed.py")
     tests = ["tests/test_api.py", "-q", "-p", "no:cacheprovider"]
     for args in (
         ["discover", root, changed, keys],
-        ["record", root, changed, keys, out],
+        ["record", root, changed, keys, calls],
     ):
-        cmd = [sys.executable, TRACER] + args + ["--"] + tests
-        r = subprocess.run(
-            cmd,
-            cwd=root,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=True,
-        )
-        if r.returncode != 0:
-            raise RuntimeError(args[0] + " failed:\n" + r.stdout[-2000:])
+        run([sys.executable, TRACER] + args + ["--"] + tests, root, lib)
+    run([sys.executable, FLATTEN, calls, "1", flat], root, lib)
+    out = []
     with open(keys) as f:
-        found = json.load(f)
-    with open(out, "rb") as f:
-        data = pickle.load(f)
-    return found, data
+        out.append(json.load(f))
+    for path in (calls, flat):
+        with open(path, "rb") as f:
+            out.append(pickle.load(f))
+    return tuple(out)
 
 
 def problems():
@@ -160,7 +171,7 @@ def problems():
     try:
         root, lib = write_fake_repo(base)
         try:
-            found, data = run_passes(root, lib)
+            found, data, flat = run_passes(root, lib)
         except RuntimeError as e:
             return [str(e)]
         out = []
@@ -178,6 +189,17 @@ def problems():
         # add appends a cell, so self after the call differs from before.
         if adds and adds[0]["after"]["self"] == adds[0]["before"]["self"]:
             out.append("Grid.add's after snapshot didn't change")
+        flat_adds = [
+            c for c in flat["calls"] if c["function"][2] == "Grid.add"
+        ]
+        first = flat_adds[0] if flat_adds else None
+        # flatten turns self into its fields, before and after.
+        if not first or (
+            first["before"].get("self.cells"),
+            first["after"].get("self.cells"),
+            first["result"].get("result"),
+        ) != ([], ["a"], 1):
+            out.append("flatten gave " + repr(first))
         return out
     finally:
         shutil.rmtree(base, ignore_errors=True)

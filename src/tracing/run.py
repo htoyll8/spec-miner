@@ -7,10 +7,11 @@ is tagged with its test, and tests.json says which are F2P, so calls from the
 fix's tests can be left out later.
 
 Writes <run>/1_traces/<task>/: keys.json, calls.pkl, calls.txt (readable),
+flat.pkl (plain values, loadable anywhere), src/ (the changed files),
 tests.json and trace.log.
 
     python -m tracing.run --tasks TASKS.json --run RUN_DIR --task ID[,ID...]
-        --trace-timeout S --pull-timeout S --docker-timeout S
+        --trace-timeout S --pull-timeout S --docker-timeout S --depth N
     python -m tracing.run ... --dry-run   # print the commands, run nothing
 """
 
@@ -44,9 +45,13 @@ def pytest_args(task):
     return list(task["test_patch_files"]) + ["-k", " or ".join(tests)]
 
 
-def inner_command(task):
-    """The shell command that runs inside the container."""
-    changed = ",".join("/testbed/" + f for f in changed_files(task["patch"]))
+def inner_command(task, depth):
+    """The shell command that runs inside the container.
+
+    depth is how many levels of fields flatten follows into objects.
+    """
+    files = changed_files(task["patch"])
+    changed = ",".join("/testbed/" + f for f in files)
     tests = " ".join(shlex.quote(a) for a in pytest_args(task))
     opts = "-q -p no:cacheprovider -o addopts="
     tracer = "python /trace/tracer.py"
@@ -64,11 +69,15 @@ def inner_command(task):
             f" /out/calls.pkl -- {tests} {opts}",
             # A readable copy, made here since loading needs the repo.
             f"{tracer} show /out/calls.pkl > /out/calls.txt",
+            f"python /trace/flatten.py /out/calls.pkl {depth} /out/flat.pkl",
+            # The changed files' source, which the grammar is read from.
+            "mkdir -p /out/src",
+            "cp --parents " + " ".join(map(shlex.quote, files)) + " /out/src/",
         ]
     )
 
 
-def docker_command(task, out, name):
+def docker_command(task, out, name, depth):
     return [
         "docker",
         "run",
@@ -82,7 +91,7 @@ def docker_command(task, out, name):
         task["image"],
         "bash",
         "-lc",
-        inner_command(task),
+        inner_command(task, depth),
     ]
 
 
@@ -92,13 +101,13 @@ def sh(cmd, timeout):
     )
 
 
-def trace(task_id, task, run_dir, timeouts, dry_run):
+def trace(task_id, task, run_dir, timeouts, depth, dry_run):
     """Trace one task. timeouts holds seconds for each step: "trace" (the
     container run), "pull" (downloading the image), and "docker" (the
     short docker commands: checking, removing a container or an image)."""
     out = Path(run_dir).resolve() / TRACES_DIR / task_id
     name = "trace_" + uuid.uuid4().hex[:10]
-    cmd = docker_command(task, out, name)
+    cmd = docker_command(task, out, name, depth)
     if dry_run:
         print(shlex.join(cmd))
         return
@@ -142,6 +151,12 @@ def main():
         ap.add_argument(
             f"--{step}-timeout", type=int, required=True, help=help_
         )
+    ap.add_argument(
+        "--depth",
+        type=int,
+        required=True,
+        help="levels of fields to follow into recorded objects",
+    )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     timeouts = {
@@ -151,7 +166,7 @@ def main():
     }
     tasks = json.loads(Path(args.tasks).read_text())
     for t in args.task.split(","):
-        trace(t, tasks[t], args.run, timeouts, args.dry_run)
+        trace(t, tasks[t], args.run, timeouts, args.depth, args.dry_run)
 
 
 if __name__ == "__main__":

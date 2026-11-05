@@ -46,7 +46,7 @@ def test_bare_names_become_files_and_k():
 
 
 def test_inner_command():
-    cmd = inner_command(TASK)
+    cmd = inner_command(TASK, 2)
     assert "git apply /out/test.patch" in cmd
     # Only the test patch: the gold patch is never applied.
     assert "gold" not in cmd
@@ -57,12 +57,15 @@ def test_inner_command():
     assert cmd.index("record") < cmd.index(
         "show /out/calls.pkl > /out/calls.txt"
     )
+    assert "flatten.py /out/calls.pkl 2 /out/flat.pkl" in cmd
+    files = "requests/models.py requests/utils.py"
+    assert f"cp --parents {files} /out/src/" in cmd
     # The self-check runs first, so a broken tracer stops the run early.
     assert cmd.index("selfcheck.py") < cmd.index("discover")
 
 
 def test_docker_command_mounts_tracer_read_only(tmp_path):
-    cmd = docker_command(TASK, tmp_path, "trace_x")
+    cmd = docker_command(TASK, tmp_path, "trace_x", 2)
     assert cmd[:3] == ["docker", "run", "--rm"]
     assert any(a.endswith(":/trace:ro") for a in cmd)
     assert f"{tmp_path}:/out" in cmd

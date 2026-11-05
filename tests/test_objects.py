@@ -1,7 +1,7 @@
 from mining.enumerate import enumerate_terms, show
 from mining.grammar import Var, code
-from mining.objects import expand, fields
 from mining.vocab import Vocab
+from tracing.objects import expand, fields
 
 
 class Node:
