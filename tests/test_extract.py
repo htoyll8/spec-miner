@@ -111,3 +111,19 @@ def test_other_methods_become_operators():
     for name in ("str.strip/0", "str.strip/1", "str.count/1", "list.count/1"):
         assert name in ops
     assert "str.rjust/1" in ops
+
+
+def test_syntax_is_always_on():
+    """in, len and arithmetic are on even if the function never uses them."""
+    src = b"def f(x):\n    return x\n"
+    fn = (
+        Parser(Language(tree_sitter_python.language()))
+        .parse(src)
+        .root_node.children[0]
+    )
+    ops = vocab_for(src, fn, ["x"]).ops
+    for op in ("IN", "LENGTH", "PLUS", "MINUS", "IS_NONE", "EQ", "AND"):
+        assert op in ops
+    # Methods and indexing still come from the source.
+    for op in ("SPLIT", "STRINDEX", "STRSUBSTR"):
+        assert op not in ops

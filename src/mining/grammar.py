@@ -35,13 +35,26 @@ class Node:
 # Types, as strings so a grammar can be written to JSON
 # ======================================================================
 
-BASE = ("int", "float", "bool", "str", "bytes", "list[str]", "list[int]")
+BASE = (
+    "int",
+    "float",
+    "bool",
+    "str",
+    "bytes",
+    "list[str]",
+    "list[int]",
+    "dict",
+)
 
 
 def typeof(v):
     """A recorded value's type, or None if the grammar doesn't cover it."""
+    if v is None:
+        return "none"
     if type(v) in (int, float, bool, str, bytes):
         return type(v).__name__
+    if type(v) is dict and all(isinstance(k, str) for k in v):
+        return "dict"
     if type(v) in (list, tuple) and v:
         inner = {type(x) for x in v}
         if inner == {str}:
@@ -81,6 +94,7 @@ OPS = {
             (("bytes",), "int"),
             (("list[str]",), "int"),
             (("list[int]",), "int"),
+            (("dict",), "int"),
         ),
         len,
         "len({0})",
@@ -175,7 +189,11 @@ OPS = {
         "({0} >= {1})",
     ),
     "IN": Op(
-        _sigs((("str", "str"), "bool"), (("str", "list[str]"), "bool")),
+        _sigs(
+            (("str", "str"), "bool"),
+            (("str", "list[str]"), "bool"),
+            (("str", "dict"), "bool"),
+        ),
         lambda x, s: x in s,
         "({0} in {1})",
     ),
@@ -193,6 +211,10 @@ OPS = {
 # Any argument type, and a result type read from the values.
 ANY = "*"
 FROM_VALUES = "?"
+
+OPS["IS_NONE"] = Op(
+    _sigs(((ANY,), "bool")), lambda x: x is None, "({0} is None)"
+)
 
 # Types whose methods can be called on recorded values: they can't change in
 # place, so a call has no side effects. Lists get tuple's methods, count and
@@ -270,17 +292,29 @@ def size(e):
     )
 
 
+def merge_types(types):
+    """One type for a set of observed types, or None if they conflict.
+
+    A type seen alongside "none" is that type, since the value can be None:
+    {"str", "none"} is "str". Operators that fail on None just drop the term.
+    """
+    types = set(types)
+    if None in types:
+        return None
+    if len(types) > 1:
+        types.discard("none")
+    return types.pop() if len(types) == 1 else None
+
+
 def type_context(ctxs):
     """The type of each variable, from the recorded calls.
 
-    A variable whose type varies between calls is left out.
+    A variable whose type varies between calls is left out, except that it
+    may also be None.
     """
     seen = {}
     for env in ctxs:
         for k, v in env.items():
             seen.setdefault(k, set()).add(typeof(v))
-    return {
-        k: next(iter(ts))
-        for k, ts in seen.items()
-        if len(ts) == 1 and None not in ts
-    }
+    out = {k: merge_types(ts) for k, ts in seen.items()}
+    return {k: t for k, t in out.items() if t is not None}

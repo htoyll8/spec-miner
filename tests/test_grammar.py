@@ -25,6 +25,8 @@ SAMPLE = {
     "bytes": b"a-b",
     "list[str]": ["a", "b"],
     "list[int]": [1, 2],
+    "dict": {"a": 1},
+    "*": None,
 }
 
 
@@ -73,7 +75,9 @@ def test_typeof():
     assert typeof(["a"]) == "list[str]"
     assert typeof([1]) == "list[int]"
     assert typeof([]) is None
-    assert typeof({"a": 1}) is None
+    assert typeof({"a": 1}) == "dict"
+    assert typeof({1: "a"}) is None  # keys must be strings
+    assert typeof(None) == "none"
 
 
 def test_type_of_rejects_wrong_types():
@@ -87,6 +91,11 @@ def test_type_of_rejects_wrong_types():
 def test_type_context_leaves_out_mixed_types():
     calls = [{"a": 1, "b": "x"}, {"a": 2, "b": 3}]
     assert type_context(calls) == {"a": "int"}
+
+
+def test_type_context_allows_none():
+    calls = [{"body": None, "n": None}, {"body": "x", "n": None}]
+    assert type_context(calls) == {"body": "str", "n": "none"}
 
 
 def test_size_counts_every_node():

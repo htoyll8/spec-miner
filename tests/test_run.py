@@ -45,10 +45,10 @@ def test_bare_names_become_files_and_k():
     ]
 
 
-def test_inner_command():
-    cmd = inner_command(TASK, 2)
-    assert "git apply /out/test.patch" in cmd
-    # Only the test patch: the gold patch is never applied.
+def test_inner_command_on_buggy_code():
+    cmd = inner_command(TASK, "buggy", 2)
+    assert "git apply /out/test.patch &&" in cmd
+    # Buggy code: the gold patch is never applied.
     assert "gold" not in cmd
     changed = "/testbed/requests/models.py,/testbed/requests/utils.py"
     assert f"tracer.py discover /testbed {changed} /out/keys.json" in cmd
@@ -64,9 +64,15 @@ def test_inner_command():
     assert cmd.index("selfcheck.py") < cmd.index("discover")
 
 
-def test_docker_command_mounts_tracer_read_only(tmp_path):
-    cmd = docker_command(TASK, tmp_path, "trace_x", 2)
-    assert cmd[:3] == ["docker", "run", "--rm"]
-    assert any(a.endswith(":/trace:ro") for a in cmd)
+def test_inner_command_on_fixed_code():
+    cmd = inner_command(TASK, "fixed", 2)
+    assert "git apply /out/test.patch /out/gold.patch &&" in cmd
+
+
+def test_docker_command(tmp_path):
+    mounts = {"/src/tracing": "/trace:ro", tmp_path: "/out"}
+    cmd = docker_command(TASK["image"], mounts, "echo hi", "spec_x")
+    assert cmd[:5] == ["docker", "run", "--rm", "--name", "spec_x"]
+    assert "/src/tracing:/trace:ro" in cmd
     assert f"{tmp_path}:/out" in cmd
-    assert TASK["image"] in cmd
+    assert cmd[-4:] == [TASK["image"], "bash", "-lc", "echo hi"]

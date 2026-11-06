@@ -117,3 +117,23 @@ def test_methods_take_their_type_from_values():
     assert found["s.isupper()"] == ("bool", (True, False))
     assert found["s.count('A')"] == ("int", (1, 0))
     assert found["s.encode()"] == ("bytes", (b" AB ", b"c"))
+
+
+def test_variables_missing_on_some_calls_are_skipped():
+    """A field set partway through, like requests' self.cookies."""
+    ctxs = [{"s": "a", "late": "x"}, {"s": "b"}]
+    vocab = Vocab([Var("s"), Var("late")], {"LENGTH": 0.0})
+    found = {code(t.expr) for t in all_terms(run(vocab, ctxs, 2))}
+    assert found == {"s", "len(s)"}
+
+
+def test_none_values_make_operators_undefined():
+    """body is a str that can be None: s[0] fails on None, so it's dropped,
+    but body is None is fine."""
+    ctxs = [{"body": "ab"}, {"body": None}]
+    vocab = Vocab(
+        [Var("body"), Const(0)], dict.fromkeys(["STRINDEX", "IS_NONE"], 0.0)
+    )
+    found = {code(t.expr) for t in all_terms(run(vocab, ctxs, 3))}
+    assert "(body is None)" in found
+    assert "body[0]" not in found

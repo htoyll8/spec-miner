@@ -17,6 +17,7 @@ from .grammar import (
     Var,
     code,
     get_op,
+    merge_types,
     type_context,
     type_of,
     typeof,
@@ -58,9 +59,10 @@ def apply(op, child_values):
     """
     out = []
     for args in zip(*child_values, strict=True):
-        if op.ok and not op.ok(*args):
-            return None
         try:
+            # A value can be None, so the check itself may fail.
+            if op.ok and not op.ok(*args):
+                return None
             out.append(op.fn(*args))
         except Exception:
             return None
@@ -80,10 +82,13 @@ def enumerate_terms(vocab, ctxs, limit, prune="self_loop"):
     bank = {1: []}
     for leaf in vocab.leaves:
         t = type_of(type_ctx, leaf)
-        if t is not None:
-            bank[1].append(
-                Term(leaf, t, tuple(evaluate(env, leaf) for env in ctxs))
-            )
+        # A variable must have a value on every call, like an operator.
+        if t is None or any(
+            isinstance(leaf, Var) and leaf.name not in env for env in ctxs
+        ):
+            continue
+        values = tuple(evaluate(env, leaf) for env in ctxs)
+        bank[1].append(Term(leaf, t, values))
 
     # newPrograms, one level at a time
     for level in range(2, limit + 1):
@@ -106,11 +111,11 @@ def enumerate_terms(vocab, ctxs, limit, prune="self_loop"):
                             continue
                         out = out_type
                         if out == FROM_VALUES:
-                            # A method: one supported type on every call.
-                            types = {typeof(v) for v in values}
-                            if len(types) != 1 or None in types:
+                            # A method: one supported type on every call,
+                            # which may also be None.
+                            out = merge_types(typeof(v) for v in values)
+                            if out is None:
                                 continue
-                            out = types.pop()
                         if prune != "none" and any(
                             c.type == out and c.values == values
                             for c in children

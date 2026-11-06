@@ -12,8 +12,27 @@ from .vocab import Vocab, save
 
 GRAMMAR_DIR = "2_grammar"
 
-# Comparisons and connectives are always on, since every rule needs them.
-ALWAYS = ("EQ", "NE", "LT", "LE", "GT", "GE", "NOT", "AND", "OR")
+# Always on: Python's own syntax and basic builtins, which any function can
+# be described with. The function's literals, the methods it calls, and
+# indexing and slicing come from its source.
+ALWAYS = (
+    "EQ",
+    "NE",
+    "LT",
+    "LE",
+    "GT",
+    "GE",
+    "NOT",
+    "AND",
+    "OR",
+    "IS_NONE",
+    "IN",
+    "LENGTH",
+    "PLUS",
+    "CONCAT",
+    "MINUS",
+    "TIMES",
+)
 # A method or builtin called in the source -> the operators it turns on.
 METHOD_OPS = {
     "len": ("LENGTH",),
