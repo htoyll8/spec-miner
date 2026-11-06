@@ -228,7 +228,7 @@ def mine_task(run, task, max_size, min_support, include_f2p, scope):
     }
     path = Path(run) / CANDIDATES_DIR / f"{task}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(result, indent=1) + "\n")
+    path.write_text(json.dumps(result, indent=1, default=repr) + "\n")
     return path, result
 
 

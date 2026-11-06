@@ -76,7 +76,7 @@ def script(task, index, arm, mutant_timeout, inputs=False):
         lines.append(f"echo {mid}")
         if m["file"] is not None:
             lines.append(f"cp /mut/{mid}.py {shlex.quote(m['file'])}")
-        lines.append(live.format(id=mid) + " > /dev/null 2>&1")
+        lines.append(live.replace("{id}", mid) + " > /dev/null 2>&1")
         if m["file"] is not None:
             lines.append(f"cp /tmp/fixed/{m['file']} {shlex.quote(m['file'])}")
     return "\n".join(lines) + "\n"

@@ -42,7 +42,8 @@ def from_json(d):
 def save(vocab, path, **info):
     """Write vocab to path as JSON, with any extra info, like the task."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({**info, **to_json(vocab)}, indent=1) + "\n")
+    text = json.dumps({**info, **to_json(vocab)}, indent=1, default=repr)
+    path.write_text(text + "\n")
 
 
 def load(path):
