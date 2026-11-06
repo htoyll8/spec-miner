@@ -1,0 +1,44 @@
+# The three-arms tasks through the whole pipeline: trace, mine, write specs
+# (baseline and candidates), generate inputs, check, and score on mutants.
+#
+#     python -m run exp/configs/three_arms.toml
+
+name = "three_arms"
+# The task list (SWE-bench fields: image, patch, test_patch, F2P, P2P, ...).
+tasks_file = "~/pydaikon/specpilot_tasks60.json"
+tasks = [
+  "psf__requests-1142",
+  "sphinx-doc__sphinx-10435",
+  "scikit-learn__scikit-learn-14983",
+  "sphinx-doc__sphinx-7454",
+  "pydata__xarray-6461",
+  "astropy__astropy-14309",
+  "scikit-learn__scikit-learn-13135",
+  "sphinx-doc__sphinx-9320",
+  "sphinx-doc__sphinx-8459",
+  "sphinx-doc__sphinx-7910",
+]
+
+[trace]
+depth = 1            # levels of fields to follow into recorded objects
+
+[mine]
+max_size = 3         # largest term
+min_support = 2      # fewest calls for a function, or for an implies rule
+f2p = "exclude"      # leave out calls from the fix's F2P tests
+scope = "function"   # grammar from the function's own code, or "file"
+
+[llm]
+model = "bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0"
+budget = 7.0         # dollars for every LLM call in the run
+
+[specs]
+arms = ["baseline", "candidates"]
+
+[mutants]
+mutant_timeout = 120 # seconds for one mutant's tests, so a loop can't hang
+
+[timeouts]
+run = 14400          # seconds for one container run
+pull = 1800          # seconds to download an image
+docker = 60          # seconds for each short docker command

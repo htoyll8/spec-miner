@@ -9,6 +9,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+llm = ["litellm"]
 
 [tool.ruff]
 line-length = 79

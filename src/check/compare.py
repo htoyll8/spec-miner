@@ -105,6 +105,25 @@ def compare_text(clauses, examples, calls=None):
     return "\n".join(lines) + "\n"
 
 
+def compare_files(run, task, arm, mode):
+    """Compare one spec's buggy and fixed results, write compare.txt, and
+    return its text."""
+    run = Path(run)
+    folder = run / RESULTS_DIR / task
+    buggy = clauses(folder / f"{arm}.buggy.{mode}.json")
+    fixed = clauses(folder / f"{arm}.fixed.{mode}.json")
+    calls = None
+    calls_path = run / INPUTS_DIR / task / "calls.py"
+    if "+inputs" in mode and calls_path.exists():
+        calls = [x.strip() for x in calls_path.read_text().splitlines()]
+        calls = [x for x in calls if x]
+    text = compare_text(
+        compare(buggy, fixed), examples_of(buggy, fixed), calls
+    )
+    (folder / f"{arm}.{mode}.compare.txt").write_text(text)
+    return text
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--run", required=True, help="the run's results folder")
@@ -112,20 +131,8 @@ def main():
     ap.add_argument("--arm", required=True, help="the spec's arm name")
     ap.add_argument("--mode", required=True, help="like live or live+inputs")
     args = ap.parse_args()
-    run = Path(args.run)
     for t in args.task.split(","):
-        folder = run / RESULTS_DIR / t
-        buggy = clauses(folder / f"{args.arm}.buggy.{args.mode}.json")
-        fixed = clauses(folder / f"{args.arm}.fixed.{args.mode}.json")
-        calls = None
-        calls_path = run / INPUTS_DIR / t / "calls.py"
-        if "+inputs" in args.mode and calls_path.exists():
-            calls = [x.strip() for x in calls_path.read_text().splitlines()]
-            calls = [x for x in calls if x]
-        groups = compare(buggy, fixed)
-        text = compare_text(groups, examples_of(buggy, fixed), calls)
-        out = folder / f"{args.arm}.{args.mode}.compare.txt"
-        out.write_text(text)
+        text = compare_files(args.run, t, args.arm, args.mode)
         print(f"{t} {args.arm} {args.mode}\n{text}")
 
 
