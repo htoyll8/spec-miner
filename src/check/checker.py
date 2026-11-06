@@ -334,17 +334,32 @@ def new_counts(clause):
         "skipped_raised": 0,
         "reasons": {},
         "example": None,
+        # Every call that violated the clause, by test, with counts.
+        "violated_by": {},
+        # Every outcome, by test: {test: {"held": n, "violated": n, ...}},
+        # so two runs can be compared call by call.
+        "by_test": {},
+        # The first violating call of each test, with its values.
+        "examples": {},
     }
 
 
-def tally(counts, outcome, reason=None, example=None):
-    """Add one call's outcome to a clause's counts. example is called for
-    the first violation, to say which call it was."""
+def tally(counts, outcome, reason=None, example=None, test=None):
+    """Add one call's outcome to a clause's counts. test is the call's test,
+    or generated::<line>. example is called on each violation, to say more
+    about the call."""
     counts[outcome] += 1
+    per = counts["by_test"].setdefault(str(test), {})
+    per[outcome] = per.get(outcome, 0) + 1
     if reason:
         counts["reasons"][reason] = counts["reasons"].get(reason, 0) + 1
-    if outcome == "violated" and counts["example"] is None and example:
-        counts["example"] = example()
+    if outcome == "violated" and example:
+        e = example()
+        if counts["example"] is None:
+            counts["example"] = e
+        by = counts["violated_by"]
+        by[e.get("test")] = by.get(e.get("test"), 0) + 1
+        counts["examples"].setdefault(str(test), e)
 
 
 def check_clause(clause, calls, names, base):
@@ -365,7 +380,7 @@ def check_clause(clause, calls, names, base):
                 env["__result__"] = result
         olds, problem = prep.capture(dict(base, **before))
         if problem:
-            tally(out, "unresolved", problem)
+            tally(out, "unresolved", problem, test=call.get("test"))
             continue
         outcome, reason = prep.judge(env, olds)
         tally(
@@ -376,6 +391,7 @@ def check_clause(clause, calls, names, base):
                 "test": call.get("test"),
                 "before": {k: _short(v) for k, v in before.items()},
             },
+            test=call.get("test"),
         )
     return out
 
@@ -388,11 +404,22 @@ def _eval_value(code, env):
 
 
 def _short(v):
+    return describe(v)
+
+
+def describe(v, limit=300):
+    """A value as short text. An object shows its fields, like
+    PreparedRequest{'method': 'POST', 'headers': {...}}, since its own repr
+    often hides them."""
     try:
-        text = repr(v)
+        fields = getattr(v, "__dict__", None)
+        if isinstance(fields, dict) and not isinstance(v, type):
+            text = type(v).__name__ + repr(fields)
+        else:
+            text = repr(v)
     except Exception:
         text = "<%s>" % type(v).__name__
-    return text[:200]
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 def check(spec_source, calls):

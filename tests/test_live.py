@@ -5,7 +5,7 @@ import textwrap
 
 import pytest
 
-from check.live import install
+from check.live import install, run_calls
 
 REPO = {
     "livepkg/__init__.py": "",
@@ -137,3 +137,39 @@ def test_unknown_functions_are_reported(repo):
     spec = "def nowhere(x):\n    Ensures(x)\n"
     report = install(spec, repo, ["livepkg.models"])
     assert report["functions"]["nowhere"]["problem"] == "not found in the repo"
+
+
+def test_generated_calls_run_under_the_referee(repo, tmp_path):
+    report = install(SPEC, repo, ["livepkg.models", "livepkg.other"])
+    calls = tmp_path / "calls.py"
+    calls.write_text(
+        "from livepkg.models import Prepared\n"
+        "Prepared('GET').prepare_content_length(None)\n"
+        "Prepared('GET').prepare_content_length('abc')\n"
+        "undefined_name()\n"
+    )
+    run_calls(calls, report)
+    assert report["generated_calls"] == {"run": 3, "raised": 1}
+    bug = (
+        "Ensures(Implies(body is None, 'Content-Length' not in self.headers))"
+    )
+    c = next(c for c in report["clauses"] if c["text"] == bug)
+    # Violated on the first call (no body), vacuous on the second.
+    assert (c["held"], c["violated"], c["vacuous"]) == (0, 1, 1)
+    assert c["example"]["test"] == "generated::2"
+
+
+def test_violations_keep_the_values_that_caused_them(repo):
+    report = install(SPEC, repo, ["livepkg.models", "livepkg.other"])
+    sys.modules["livepkg.models"].Prepared("GET").prepare_content_length(None)
+    bug = (
+        "Ensures(Implies(body is None, 'Content-Length' not in self.headers))"
+    )
+    c = next(c for c in report["clauses"] if c["text"] == bug)
+    (e,) = c["examples"].values()
+    # Before the call: GET, no headers. After: the header was added.
+    assert "'method': 'GET'" in e["before"]["self"]
+    assert "'headers': {}" in e["before"]["self"]
+    assert "'Content-Length': '0'" in e["after"]["self"]
+    assert e["before"]["body"] == "None"
+    assert e["result"] == "None"

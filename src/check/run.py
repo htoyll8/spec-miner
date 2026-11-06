@@ -11,6 +11,8 @@ its clauses in the task's container, in one of two modes:
 A good clause holds on the fixed code and is violated on some buggy call.
 
 Writes <run>/5_check/<task>/<arm>.<code>.<mode>.json, and a readable .txt.
+With --inputs (live mode only), the referee also runs the calls from
+llm/write_inputs.py, and the name ends in +inputs.
 
     python -m check.run --tasks TASKS.json --run RUN --task ID --arm ARM
         --code buggy|fixed --mode recorded|live
@@ -23,6 +25,7 @@ import re
 import shlex
 from pathlib import Path
 
+from llm.write_inputs import INPUTS_DIR
 from tracing.run import (
     ACTIVATE,
     TRACES_DIRS,
@@ -59,13 +62,16 @@ def inner_command(code, spec_name, out_name):
     )
 
 
-def live_command(task, code, spec_name, out_name):
+def live_command(task, code, spec_name, out_name, inputs=False):
     """The live check: live.py wraps the spec's functions, then runs the
     tests. The changed files' modules are imported first, so their
-    functions can be found."""
+    functions can be found. With inputs, it also runs the generated calls,
+    saved as /work/calls.py."""
     modules = ",".join(
         f[:-3].replace("/", ".") for f in changed_files(task["patch"])
     )
+    if inputs:
+        modules += " /work/calls.py"
     tests = " ".join(shlex.quote(a) for a in pytest_args(task))
     return " && ".join(
         [
@@ -103,7 +109,7 @@ def summary(report):
     return "\n".join(lines) + "\n"
 
 
-def check(task_id, task, run, arm, code, mode, timeouts):
+def check(task_id, task, run, arm, code, mode, timeouts, inputs=False):
     run = Path(run).resolve()
     out = run / RESULTS_DIR / task_id
     out.mkdir(parents=True, exist_ok=True)
@@ -111,7 +117,7 @@ def check(task_id, task, run, arm, code, mode, timeouts):
     if spec is None:
         print(task_id, arm, "has no python code block")
         return
-    name = f"{arm}.{code}.{mode}"
+    name = f"{arm}.{code}.{mode}" + ("+inputs" if inputs else "")
     spec_name, out_name = f"{arm}.spec.py", f"{name}.json"
     (out / spec_name).write_text(spec)
     if mode == "recorded":
@@ -121,8 +127,11 @@ def check(task_id, task, run, arm, code, mode, timeouts):
     else:
         (out / "test.patch").write_text(task["test_patch"])
         (out / "gold.patch").write_text(task["patch"])
+        if inputs:
+            calls = run / INPUTS_DIR / task_id / "calls.py"
+            (out / "calls.py").write_text(calls.read_text())
         mounts = {CHECK_DIR: "/check:ro", out: "/work"}
-        inner = live_command(task, code, spec_name, out_name)
+        inner = live_command(task, code, spec_name, out_name, inputs)
     log = run_in_image(task["image"], mounts, inner, timeouts)
     (out / f"{name}.log").write_text(log)
     result = out / out_name
@@ -142,6 +151,11 @@ def main():
     ap.add_argument("--arm", required=True, help="the spec's arm name")
     ap.add_argument("--code", choices=("buggy", "fixed"), required=True)
     ap.add_argument("--mode", choices=("recorded", "live"), required=True)
+    ap.add_argument(
+        "--inputs",
+        action="store_true",
+        help="live mode: also run the calls from llm/write_inputs.py",
+    )
     add_timeouts(ap)
     args = ap.parse_args()
     tasks = json.loads(Path(args.tasks).read_text())
@@ -154,6 +168,7 @@ def main():
             args.code,
             args.mode,
             timeouts_from(args),
+            args.inputs,
         )
 
 

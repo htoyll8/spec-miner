@@ -13,10 +13,14 @@ helpers, parameter names). The report has the same shape.
 
 Standalone and Python 3.6+, like tracing/tracer.py.
 
-    python live.py SPEC.py OUT.json ROOT MODULE[,MODULE...] -- PYTEST_ARGS...
+    python live.py SPEC.py OUT.json ROOT MODULE[,MODULE...] [CALLS.py]
+        -- PYTEST_ARGS...
 
 ROOT is the repo, and MODULE the modules to import first, like
-requests.models, so their functions can be found and wrapped.
+requests.models, so their functions can be found and wrapped. CALLS.py, from
+llm/write_inputs.py, is extra inputs: after the tests, with the referee still
+in place, its import lines run, then each other line runs on its own, tagged
+generated::<line number>. An error in a call is caught and counted.
 """
 
 import ast
@@ -33,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from checker import (  # noqa: E402
     Prepared,
+    describe,
     helpers,
     match_params,
     new_counts,
@@ -133,28 +138,44 @@ class Referee:
         live = self.arguments(args, kwargs)
         env = dict(self.base, **live)
         test = current_test()
+        # The arguments as text now, since the call may change them. Only
+        # kept if a clause fails on this call.
+        before = {k: describe(v) for k, v in live.items()}
+
+        def example():
+            return {"test": test, "before": before}
+
         olds = {}
         for prep, counts in self.preps:
             if prep.kind == "pre":
                 outcome, reason = prep.judge(env, ([], []))
-                tally(counts, outcome, reason, lambda: {"test": test})
+                tally(counts, outcome, reason, example, test)
             else:
                 olds[id(prep)] = prep.capture(env, copy_values=True)
-        return live, olds, test
+        return live, olds, test, before
 
     def leave(self, entry, result):
-        live, olds, test = entry
+        live, olds, test, before = entry
         env = dict(self.base, **live)
         env["__result__"] = result
+
+        def example():
+            return {
+                "test": test,
+                "before": before,
+                "after": {k: describe(v) for k, v in live.items()},
+                "result": describe(result),
+            }
+
         for prep, counts in self.preps:
             if prep.kind != "post":
                 continue
             captured, problem = olds[id(prep)]
             if problem:
-                tally(counts, "unresolved", problem)
+                tally(counts, "unresolved", problem, test=test)
                 continue
             outcome, reason = prep.judge(env, captured)
-            tally(counts, outcome, reason, lambda: {"test": test})
+            tally(counts, outcome, reason, example, test)
 
     def skip_posts(self):
         for prep, counts in self.preps:
@@ -247,19 +268,53 @@ def install(spec_source, root, imports):
     return report
 
 
+class FailedTests:
+    """A pytest plugin that lists the tests that failed, so generated input
+    cases can be told apart from the repo's own tests."""
+
+    def __init__(self, report):
+        self.failed = report.setdefault("failed_tests", [])
+
+    def pytest_runtest_logreport(self, report):
+        if report.failed and report.nodeid not in self.failed:
+            self.failed.append(report.nodeid)
+
+
+def run_calls(path, report):
+    """Run the generated calls, each on its own, under the referee."""
+    with open(path) as f:
+        lines = [x.strip() for x in f if x.strip()]
+    namespace = {"__name__": "generated"}
+    stats = report.setdefault("generated_calls", {"run": 0, "raised": 0})
+    for n, line in enumerate(lines, 1):
+        is_import = line.startswith(("import ", "from "))
+        if not is_import:
+            os.environ["PYTEST_CURRENT_TEST"] = "generated::%d (call)" % n
+            stats["run"] += 1
+        try:
+            exec(line, namespace)
+        except Exception:
+            if not is_import:
+                stats["raised"] += 1
+    os.environ.pop("PYTEST_CURRENT_TEST", None)
+
+
 def main(argv):
     if "--" not in argv:
         sys.exit(__doc__)
     i = argv.index("--")
     mine, pytest_args = argv[:i], argv[i:][1:]
-    spec_path, out_path, root, modules = mine
+    calls_path = mine[4] if len(mine) == 5 else None
+    spec_path, out_path, root, modules = mine[:4]
     with open(spec_path) as f:
         spec_source = f.read()
     report = install(spec_source, root, modules.split(","))
     import pytest
 
-    rc = pytest.main(pytest_args)
+    rc = pytest.main(pytest_args, plugins=[FailedTests(report)])
     report["pytest_exit"] = int(rc)
+    if calls_path:
+        run_calls(calls_path, report)
     with open(out_path, "w") as f:
         json.dump(report, f, indent=1)
 

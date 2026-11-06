@@ -4,8 +4,9 @@ The prompt is the issue, the changed files as they were before the fix and,
 with --candidates, every rule mined in step 3, all in one message. No tools.
 
 Writes <run>/4_specs/<task>/<arm>.md (the answer), <arm>.prompt.txt, and
-<arm>.json (model, tokens, cost). The arm is "candidates" or "issue". It
-won't start a call once the run has spent --budget dollars.
+<arm>.json (model, tokens, cost). The arm is "baseline" (the issue and the
+code) or "candidates" (the same plus the rules). It won't start a call once
+the run has spent --budget dollars, counting every LLM step (llm/call.py).
 
     python -m llm.write_spec --tasks TASKS.json --run RUN --task ID
         --model MODEL --budget USD [--max-tokens N] [--candidates]
@@ -15,14 +16,11 @@ import argparse
 import json
 from pathlib import Path
 
+from .call import ask, spent
+
 TRACES_DIR = "1_traces"
 CANDIDATES_DIR = "3_candidates"
 SPECS_DIR = "4_specs"
-
-# Dollars per token, for the models we use: input, output.
-PRICES = {
-    "bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0": (5e-6, 25e-6),
-}
 
 # The run 7 system prompt, without "and its fix", since there's no fix here.
 SYSTEM = (
@@ -87,59 +85,24 @@ def build_prompt(task_id, task, trace, candidates=None):
     return "\n".join(parts)
 
 
-def cost(model, usage):
-    price_in, price_out = PRICES[model]
-    return usage.prompt_tokens * price_in + usage.completion_tokens * price_out
-
-
-def spent(ledger):
-    return json.loads(ledger.read_text())["usd"] if ledger.exists() else 0.0
-
-
 def write_spec(
     tasks, run, task_id, model, max_tokens, budget, with_candidates
 ):
-    import litellm
-
-    if model not in PRICES:
-        raise SystemExit(f"no price for {model}; add it to PRICES")
     run = Path(run)
-    ledger = run / SPECS_DIR / "spent.json"
-    if spent(ledger) >= budget:
-        raise SystemExit(f"budget reached: ${spent(ledger):.2f} of ${budget}")
     candidates = None
     if with_candidates:
         path = run / CANDIDATES_DIR / f"{task_id}.json"
         candidates = json.loads(path.read_text())
-    arm = "candidates" if with_candidates else "issue"
+    arm = "candidates" if with_candidates else "baseline"
     trace = run / TRACES_DIR / task_id
     prompt = build_prompt(task_id, tasks[task_id], trace, candidates)
     out = run / SPECS_DIR / task_id
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{arm}.prompt.txt").write_text(prompt)
-
-    limit = {} if max_tokens is None else {"max_tokens": max_tokens}
-    r = litellm.completion(
-        model=model,
-        messages=[
-            {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": prompt},
-        ],
-        **limit,
-    )
-    usd = cost(model, r.usage)
-    (out / f"{arm}.md").write_text(r.choices[0].message.content)
-    info = {
-        "model": model,
-        "prompt_tokens": r.usage.prompt_tokens,
-        "completion_tokens": r.usage.completion_tokens,
-        "usd": round(usd, 4),
-        # "length" means the answer was cut off at the token limit.
-        "finish_reason": r.choices[0].finish_reason,
-    }
+    text, info = ask(run, model, budget, SYSTEM, prompt, max_tokens)
+    (out / f"{arm}.md").write_text(text)
     (out / f"{arm}.json").write_text(json.dumps(info, indent=1) + "\n")
-    ledger.write_text(json.dumps({"usd": round(spent(ledger) + usd, 4)}))
-    print(f"{task_id} {arm}: ${usd:.3f}, run total ${spent(ledger):.3f}")
+    print(f"{task_id} {arm}: ${info['usd']:.3f}, run total ${spent(run):.3f}")
 
 
 def main():

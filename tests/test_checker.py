@@ -183,3 +183,15 @@ def test_live_command_imports_changed_modules_and_runs_tests():
         "/check/live.py /work/issue.spec.py /work/issue.fixed.live.json"
         " /testbed requests.models -- test_requests.py::T::test_a" in cmd
     )
+
+
+def test_live_command_with_inputs_passes_the_calls():
+    from check.run import live_command
+
+    task = {
+        "patch": "diff --git a/requests/models.py b/requests/models.py\n",
+        "F2P": ["t.py::test_a"],
+        "P2P": [],
+    }
+    cmd = live_command(task, "fixed", "b.spec.py", "b.json", inputs=True)
+    assert "/testbed requests.models /work/calls.py -- t.py::test_a" in cmd

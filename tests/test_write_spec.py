@@ -24,7 +24,7 @@ def trace_dir(tmp_path):
     return tmp_path
 
 
-def test_issue_arm_has_issue_code_and_job(tmp_path):
+def test_baseline_arm_has_issue_code_and_job(tmp_path):
     prompt = build_prompt("psf__requests-1142", TASK, trace_dir(tmp_path))
     assert "requests.get is ALWAYS sending content length" in prompt
     assert "`requests/models.py`" in prompt
